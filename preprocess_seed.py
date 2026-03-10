@@ -79,13 +79,22 @@ def _process_ica_segment(data_seg, info, montage):
     raw_seg = mne.io.RawArray(data_seg * 1e-6, info, verbose=False)
     raw_seg.set_montage(montage, on_missing='ignore')
     
-    # 依赖说明：此处 method 默认调用 'fastica'，底层需依赖 scikit-learn 包
-    ica = mne.preprocessing.ICA(n_components=15, random_state=42, max_iter='auto', verbose=False)
-    ica.fit(raw_seg, verbose=False)
+    # [优化 1]：创建用于 ICA 拟合的高通副本 (1.0 Hz)
+    # 目的：阻断次低频漂移对盲源分离方差的干扰，消除 RuntimeWarning
+    raw_ica_fit = raw_seg.copy().filter(l_freq=1.0, h_freq=None, verbose=False)
     
+    # [优化 2]：增加 max_iter
+    # 目的：为 FastICA 算法提供更高的迭代深度，消除 ConvergenceWarning
+    ica = mne.preprocessing.ICA(n_components=15, random_state=42, max_iter=2000, verbose=False)
+    
+    # 仅在高通副本上执行空间矩阵解算
+    ica.fit(raw_ica_fit, verbose=False)
+    
+    # 在 0.25Hz 原始数据上通过模式匹配定位眼电成分
     eog_indices, _ = ica.find_bads_eog(raw_seg, ch_name=['FP1', 'FP2'], verbose=False)
     ica.exclude = eog_indices
     
+    # 将净化后的 ICA 逆矩阵投射回 0.25Hz 原始数据
     raw_clean = ica.apply(raw_seg.copy(), verbose=False)
     return raw_clean.get_data() * 1e6
 

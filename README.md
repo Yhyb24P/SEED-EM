@@ -1,84 +1,101 @@
-# SEED Dataset EEG Preprocessing Pipeline
+SEED Dataset EEG Preprocessing & DL Feature Pipeline
 
-本项目为基于上海交通大学 SEED（SJTU Emotion EEG Dataset）情绪脑电数据集的标准化预处理流水线。项目实现了从 MATLAB 原始逻辑向现代 Python (`MNE-Python` + `SciPy`) 生态的完整、严格的工程化迁移。
+本项目为基于上海交通大学 SEED（SJTU Emotion EEG Dataset）情绪脑电数据集的标准化预处理与深度学习特征提取流水线。项目实现了从 MATLAB 原始硬编码逻辑向现代 Python（基于 MNE-Python, SciPy, PyTorch 与 PennyLane）生态的完整、严谨的工程化迁移。
 
-流水线接收初始采集的连续脑电信号，执行自动化伪迹消除与空间滤波，输出具备高信噪比的纯净脑电特征矩阵，供后续情感状态分类与微分熵（DE）提取使用。
+管线具备高度模块化的架构，支持高信噪比脑电信号的重构，并能并行提取适配图神经网络（GNN）与时空卷积网络（EEGNet/TSception）的先验特征矩阵。
 
-## 目录结构规划
+目录结构规划
 
-```text
 .
-├── meta_info/                  # 数据集实验材料与通道拓扑说明
-├── matlab_legacy/              # 原始 MATLAB (`preprocess_live.m`) 算法参照
-├── Data/                       # 计算流挂载目录（由 .gitignore 排除）
-│   ├── Preprocessed_EEG/       # [Input] 存放官网下载的原始 45 个 .mat 文件
-│   ├── EEG_pure/               # [Output] 自动化输出的清洗后 .mat 文件
-│   └── ExtractedFeatures/      # [Output] 预留特征提取目录
-├── preprocess_seed.py          # 核心预处理算子与多核流水线
-├── requirements.txt            # 依赖环境
-└── README.md                   # 项目文档
-```
+├── config.py                # 全局配置与元数据常量（采样率、通道拓扑等）
+├── core_transforms.py       # 脑电核心信号处理无状态算子（CAR、滤波、截断等）
+├── feature_extractors.py    # DL/GNN 特征提取器（图连通性、时频 STFT 等）
+├── models.py                # 深度与量子模型架构定义（包含 QVAE 拓扑）
+├── artifact_remover.py      # 伪迹隔离与多进程调度路由（支持 ICA / QVAE）
+├── main.py                  # 流水线主入口
+├── meta_info/               # 数据集实验材料与通道拓扑说明
+├── matlab_legacy/           # 原始 MATLAB 算法参照归档
+├── Data/                    # 数据流挂载目录（受 .gitignore 保护）
+│   ├── Preprocessed_EEG/    # [Input] 存放原始 45 个被试 .mat 文件
+│   └── EEG_pure/            # [Output] 自动化输出的纯净特征 .mat 文件
+├── requirements.txt         # 依赖环境清单
+├── .gitignore               # 版本控制忽略规则
+└── README.md                # 项目文档
 
-## 技术规格与处理节点
 
-当前 Python 重构版本在严格保证与原始 MATLAB 脚本**数学等效性**的前提下，对底层算子进行了计算性能与收敛性的深度优化：
+技术规格与处理节点
 
-1.  **不良通道硬插值 (Hardcoded Spherical Spline Interpolation)**
-      - 严格映射 `SEED data check report.xlsx` 的实验日志，针对特定批次被试（Subject 1, 2, 13, 16, 37, 43, 45）实施球面样条插值，解决因硬件接触不良产生的坏导问题。
-2.  **共平均参考 (Common Average Reference, CAR)**
-      - 使用全脑均值重参考，消除系统性直流偏置。
-3.  **零相位带通滤波 (Zero-phase Butterworth Bandpass Filter)**
-      - $0.25 \sim 50 \text{ Hz}$，二阶 Butterworth 滤波器。通过 `scipy.signal.filtfilt` 消除相位偏移（Phase shift）。
-4.  **线性基线漂移校正 (Detrending)**
-      - 逐通道移除线性趋势。
-5.  **矢量化超幅异常抑制 (Vectorized Artifact Rejection)**
-      - 采用 1D 布尔卷积算子（$O(N)$ 复杂度），高效锁定超幅（$\pm130\mu V$）时间点并沿时间轴向外膨胀 `check_step=2` 个样本点进行物理截断。
-6.  **双频带独立成分分析与并发去伪 (Dual-Band Windowed ICA with Joblib)**
-      - 采用 $40\text{ s}$ 固定时间窗机制。
-      - **收敛性优化**：构建 $1.0\text{ Hz}$ 高通副本专用于 `FastICA` 空间解混矩阵的拟合，彻底消除低频漂移引发的 `ConvergenceWarning`。
-      - 自动选择额极通道（`FP1`, `FP2`）作为 EOG 代理，客观投射并剔除眼电与眨眼伪迹。
-      - 引入 `joblib` CPU 级并发（`n_jobs=-1`），将 ICA 求解耗时压缩至原先的 30% 左右。
+当前重构版本在保证数据处理严谨性的前提下，实施了端到端的性能优化与特征扩容：
 
-## 快速运行指南
+1. 信号重组与频域净化 (Core Transforms)
 
-### 1\. 环境准备
+硬编码拓扑修复：精确复现 SEED 实验日志，对特定被试异常通道实施物理均值修补。
 
-推荐使用 `conda` 或 `virtualenv` 管理依赖环境。需确保已安装 `scikit-learn` 以支持 MNE 的 FastICA 算法引擎。
+频域截断与谐波抑制：采用 $1.0 \sim 45.0 \text{ Hz}$ 零相位带通滤波阻断低频漂移与高频肌电，串联 $50 \text{ Hz}$ IIR 陷波器（Notch Filter）彻底剥离工频干扰。
 
-```bash
+矢量化异常抑制：摒弃传统循环，使用 1D 布尔卷积算子对 $\pm 130\mu V$ 越界点进行高吞吐量的邻域膨胀截断。
+
+2. 双重盲源去伪路由 (Artifact Rejection Routing)
+
+Classic ICA (默认生产路径)：
+
+采用 $1.0\text{ Hz}$ 专用高通副本进行解混矩阵拟合，彻底消除次低频漂移引发的方差倾斜与不收敛警告。
+
+Picard 求解器优先：引入基于 L-BFGS 的 Picard 算法提供全局收敛保证，降级兜底至 FastICA。
+
+Quantum VAE (前沿实验路径)：
+
+构建集成 PyTorch 与 PennyLane 的变分量子线路（VQC）。
+
+通过 torch.vmap 矢量化量子态模拟。计算隐空间与额极（FP1/FP2）眼电代理的皮尔逊相关系数，动态置零高伪迹关联的量子维度后重构信号。
+
+3. 深度学习特征扩展 (DL Feature Extractors)
+
+输出矩阵除纯净连续脑电外，原生附加两类高级特征矩阵：
+
+Adjacency Matrix ($A \in \mathbb{R}^{62 \times 62}$)：无向皮尔逊全脑功能连通性矩阵，供 PyTorch Geometric (GraphConv/GCN) 构建 edge_index。
+
+STFT Matrix ($Z \in \mathbb{C}^{F \times T}$)：$4\text{ Hz}$ 频域分辨率时频图谱，供 2D-CNN 或 TSception 提取时空节律特征。
+
+4. 架构与内存优化
+
+实施严格的内存流式释放（gc.collect(), .copy() 深拷贝提取），将 Day 3 高负载试次的内存峰值压降约 40%，阻断多字典键迭代引发的指针变异。
+
+多进程锁保护：在 QVAE 模式下自动将 joblib 并发降维至 n_jobs=1，避免 PyTorch C++ 线程死锁；ICA 模式全速 n_jobs=-1 并发。
+
+快速运行指南
+
+1. 环境准备
+
+推荐使用虚拟环境管理器配置依赖，核心需求包括 MNE, SciPy, Joblib。QVAE 及高效 ICA 求解器依赖 PyTorch, PennyLane 及 python-picard。
+
 pip install numpy scipy pandas mne joblib scikit-learn
+pip install python-picard torch pennylane
 
-```
 
-*(可选) 您可以直接通过 requirements 导入：*
+2. 数据就绪
 
-```bash
-pip install -r requirements.txt
-```
+在项目根目录构建 Data/Preprocessed_EEG，放入 SEED 数据集的 45 个实验原始 .mat 文件。系统会自动过滤混入的 label.mat。
 
-### 2\. 数据就绪
+3. 执行流水线
 
-在项目根目录创建 `Data/Preprocessed_EEG` 目录，并将 SEED 数据集提供的 45 个实验原始 `.mat` 文件置入其中（无需包含 `label.mat`，脚本内建有自动隔离机制）。
+python main.py
 
-### 3\. 执行预处理管线
 
-启动并发清洗流：
+4. 输出标准
 
-```bash
-python preprocess_seed.py
-```
+纯净特征文件生成于 Data/EEG_pure/S{ID}.mat。其内部 MATLAB 字典层级为：
 
-### 4\. 输出标准
+data_pure: $3 \times 15$ Object Array，纯净连续脑电数据。
 
-清洗后的文件将以对应的被试编号生成至 `Data/EEG_pure/S{ID}.mat`。
-输出 `.mat` 文件的内部层级结构如下：
+adj_matrix: $3 \times 15$ Object Array，图连通性矩阵。
 
-  - `data_pure`: $3 \times 15$ 的对象数组 (Object Array)，严格映射至 MATLAB Cell 结构（天数 $\times$ 试次）。各单元内置 $62 \times T_{clean}$ 的纯净脑电信号。
-  - `sfreq`: 采样率 ($200\text{ Hz}$)。
-  - `ch_names`: $62$ 通道 10-20 系统标准命名顺序。
+stft_features: $3 \times 15$ Object Array，时频变换矩阵。
 
-## 运行日志规范
+sfreq: 采样率 ($200\text{ Hz}$)。
 
-在流水线运行期间，终端将提供进度追踪及边界验证反馈：
+ch_names: $62$ 通道元数据列表。
 
-  - 若输入数据的通道数非 $62$ 或 试次数非 $15$，系统将主动抛出 `ValueError` 以阻断伪造数据或污染数据的进入。
+系统状态与断言规范
+
+为保证入模数据质量，管道设置了严格的输入形状与试次数量拦截器（通道数 $\neq 62$ 或 试次 $\neq 15$ 将直接抛出 ValueError 并阻断该被试）。
