@@ -59,13 +59,15 @@ if HAS_QVAE_DEPS:
             logvar = self.fc_logvar(h)
             z = self.reparameterize(mu, logvar)
             
-            batched_q_circuit = torch.vmap(self.q_circuit, in_dims=(0, None))
-            res = batched_q_circuit(z, self.q_weights)
-            
-            if isinstance(res, (list, tuple)):
-                q_out = torch.stack(res, dim=1)
-            else:
-                q_out = res
+            # 剥离 torch.vmap 的黑盒映射，改用显式计算图遍历穿透 PennyLane 屏障
+            q_out_list = []
+            for i in range(z.size(0)):
+                res_i = self.q_circuit(z[i], self.q_weights)
+                if isinstance(res_i, (list, tuple)):
+                    q_out_list.append(torch.stack(res_i))
+                else:
+                    q_out_list.append(res_i)
+            q_out = torch.stack(q_out_list).float()
                 
             recon = self.decoder(q_out)
             return recon, mu, logvar, q_out

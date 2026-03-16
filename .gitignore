@@ -8,6 +8,7 @@ Data/**/*.h5
 Data/**/*.csv
 Data/**/*.pdf
 SEED_GCN_Classifier/
+math/
 # 全局兜底：防止数据文件出现在非 Data 目录
 *.mat
 *.npy
