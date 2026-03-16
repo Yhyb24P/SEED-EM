@@ -1,7 +1,8 @@
 """
 伪迹隔离与调度路由 (系统级重构版)
-[修复 1] 注入全局 Z-Score 统计量下放，实施全局流形映射，消除 QVAE 的 40s 边界断崖伪迹 (Boundary Artifacts)。
+[零样本推断] 注入基于试次级仿射不变性 (Trial-level Affine Invariance) 的拓扑手术，实施流形对齐。
 """
+import os
 import numpy as np
 import mne
 from joblib import Parallel, delayed
@@ -14,11 +15,11 @@ if HAS_QVAE_DEPS:
     from models import QuantumEEGDenoiser
 
 def _process_qvae_segment(data_seg, global_mean=None, global_std=None):
-    """QVAE 纯推理模式隔离眼电特征 (支持全局流形对齐)"""
+    """QVAE 纯推断模式：在希尔伯特子空间执行正交掩码手术 (Orthogonal Masking Surgery)"""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     X_raw = torch.tensor(data_seg.T, dtype=torch.float32, device=device)
     
-    # [核心修复 1.1] 摒弃局部批归一化，使用向下传递的全局统计量进行 Z-Score，防缩放塌陷
+    # 1. 试次级域对齐 (Domain Alignment for Affine Invariance)
     if global_mean is not None and global_std is not None:
         g_mean = torch.tensor(global_mean.T, dtype=torch.float32, device=device)
         g_std = torch.tensor(global_std.T, dtype=torch.float32, device=device)
@@ -29,59 +30,76 @@ def _process_qvae_segment(data_seg, global_mean=None, global_std=None):
     X_norm = (X_raw - g_mean) / (g_std + 1e-8)
     
     model = QuantumEEGDenoiser(input_dim=62, hidden_dim=32, n_qubits=6).to(device)
-    try:
-        model.load_state_dict(torch.load('weights/qvae_pretrained.pt', map_location=device, weights_only=True))
-    except FileNotFoundError:
-        pass
+    
+    # [核心防线] 零样本推断必须依赖流形泛化权重，绝对禁止静默退化为随机哈希映射
+    weight_path = 'weights/qvae_pretrained.pt'
+    if not os.path.exists(weight_path):
+        raise FileNotFoundError(
+            f"[-] 致命异常: 缺失泛化流形权重 '{weight_path}'。\n"
+            f"必须先运行 `python train_qvae.py` 执行无监督预训练以提取跨被试拓扑不变性，\n"
+            f"或者在 main.py 中将盲源分离方法显式回退为 method='ica'。"
+        )
+    model.load_state_dict(torch.load(weight_path, map_location=device, weights_only=True), strict=True)
         
     model.eval()
     with torch.no_grad():
-        _, _, _, q_out = model(X_norm)
+        # 2. 零样本流形嵌入 (Zero-shot Embedding)
+        chunk_size = 2000
+        Z_infer_list = []
+        for i in range(0, X_norm.size(0), chunk_size):
+            chunk = X_norm[i:i+chunk_size]
+            _, _, _, q_chunk = model(chunk)
+            Z_infer_list.append(q_chunk)
+        Z_infer = torch.cat(Z_infer_list, dim=0)
         
-        # 动态鲁棒 EOG 锚点 (基于原始物理变量求方差)
-        frontal_indices = [0, 1, 2, 3, 4]
+        # 3. 解剖学眼电锚点构建 (Anatomical Anchor Generation: a_EOG)
+        frontal_indices = [0, 1, 2, 3, 4]  # FP1, FPZ, FP2, AF3, AF4
         variances = torch.var(X_raw[:, frontal_indices], dim=0)
         
         valid_mask = (variances > 1e-2) & (variances < 5000)
         if not valid_mask.any():
-            anchor_signal = torch.mean(X_norm, dim=1)
+            a_EOG = torch.mean(X_norm, dim=1)
         else:
             valid_frontals = torch.tensor(frontal_indices, device=device)[valid_mask]
-            anchor_signal = torch.mean(X_norm[:, valid_frontals], dim=1)
+            a_EOG = torch.mean(X_norm[:, valid_frontals], dim=1)
             
-        q_out_centered = q_out - q_out.mean(dim=0)
-        anchor_centered = anchor_signal - anchor_signal.mean()
+        # 4. 拓扑皮尔逊度量与正交掩码剥离 (Orthogonal Masking Surgery)
+        Z_centered = Z_infer - Z_infer.mean(dim=0)
+        a_EOG_centered = a_EOG - a_EOG.mean()
         
-        denom = (torch.sqrt(torch.sum(q_out_centered**2, dim=0)) * torch.sqrt(torch.sum(anchor_centered**2)))
+        denom = (torch.sqrt(torch.sum(Z_centered**2, dim=0)) * torch.sqrt(torch.sum(a_EOG_centered**2)))
         denom[denom == 0] = 1e-8
-        correlations = torch.sum(q_out_centered * anchor_centered.unsqueeze(1), dim=0) / denom
+        rho = torch.sum(Z_centered * a_EOG_centered.unsqueeze(1), dim=0) / denom
         
-        eog_mask = torch.abs(correlations) > 0.4
-        q_out_clean = q_out.clone()
-        q_out_clean[:, eog_mask] = 0.0
+        eog_mask = torch.abs(rho) > 0.4
+        Z_clean = Z_infer.clone()
+        Z_clean[:, eog_mask] = 0.0
         
-        clean_X_norm = model.decoder(q_out_clean)
+        # 5. 逆向解码重构
+        clean_X_norm_list = []
+        for i in range(0, Z_clean.size(0), chunk_size):
+            chunk_clean = model.decoder(Z_clean[i:i+chunk_size])
+            clean_X_norm_list.append(chunk_clean)
+        clean_X_norm = torch.cat(clean_X_norm_list, dim=0)
         
-        # [核心修复 1.2] 反归一化：将清理后的信号精准投射回基于全局属性的物理微伏域
+        # 6. 物理量纲还原 (Inverse Projection Recovery)
         clean_X = clean_X_norm * g_std + g_mean
-        latent_Z = q_out.cpu().numpy().T
+        
+        # 提取执行拓扑手术后、已剔除眼电的纯净潜变量作为多模态独立特征
+        latent_Z_clean = Z_clean.cpu().numpy().T
         
     del model
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         
-    return clean_X.cpu().numpy().T, latent_Z
+    return clean_X.cpu().numpy().T, latent_Z_clean
 
 def _process_artifact_segment(data_seg, sfreq, method='qvae', global_mean=None, global_std=None):
     if np.linalg.matrix_rank(data_seg) < 15:
         return data_seg, None
 
     if method == 'qvae' and HAS_QVAE_DEPS:
-        try:
-            return _process_qvae_segment(data_seg, global_mean, global_std)
-        except Exception as e:
-            print(f"  [QVAE Error] {e}")
-            pass
+        return _process_qvae_segment(data_seg, global_mean, global_std)
             
     try:
         info = mne.create_info(ch_names=CH_NAMES, sfreq=sfreq, ch_types=['eeg'] * data_seg.shape[0])

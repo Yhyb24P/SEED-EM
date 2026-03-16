@@ -30,12 +30,17 @@ if HAS_QVAE_DEPS:
             self.fc_mu = nn.Linear(hidden_dim, n_qubits)
             self.fc_logvar = nn.Linear(hidden_dim, n_qubits)
             
-            self.dev = qml.device("default.qubit", wires=n_qubits)
+            # self.dev = qml.device("default.qubit", wires=n_qubits)
+            try:
+                self.dev = qml.device("lightning.gpu", wires=n_qubits)
+            except Exception:
+                self.dev = qml.device("default.qubit", wires=n_qubits)
             
             @qml.qnode(self.dev, interface="torch")
             def q_circuit(inputs, weights):
                 for i in range(n_qubits):
-                    qml.RY(inputs[i], wires=i)
+                    # qml.RY(inputs[i], wires=i)
+                    qml.RY(inputs[..., i], wires=i)
                 qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
                 return [qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]
                 
@@ -59,15 +64,17 @@ if HAS_QVAE_DEPS:
             logvar = self.fc_logvar(h)
             z = self.reparameterize(mu, logvar)
             
-            # 剥离 torch.vmap 的黑盒映射，改用显式计算图遍历穿透 PennyLane 屏障
-            q_out_list = []
-            for i in range(z.size(0)):
-                res_i = self.q_circuit(z[i], self.q_weights)
-                if isinstance(res_i, (list, tuple)):
-                    q_out_list.append(torch.stack(res_i))
-                else:
-                    q_out_list.append(res_i)
-            q_out = torch.stack(q_out_list).float()
+            # # 剥离 torch.vmap 的黑盒映射，改用显式计算图遍历穿透 PennyLane 屏障
+            # q_out_list = []
+            # for i in range(z.size(0)):
+            #     res_i = self.q_circuit(z[i], self.q_weights)
+            #     if isinstance(res_i, (list, tuple)):
+            #         q_out_list.append(torch.stack(res_i))
+            #     else:
+            #         q_out_list.append(res_i)
+            # q_out = torch.stack(q_out_list).float()
+            res = self.q_circuit(z, self.q_weights)
+            q_out = torch.stack(res, dim=1).float() if isinstance(res, (list, tuple)) else res.float()
                 
             recon = self.decoder(q_out)
             return recon, mu, logvar, q_out
