@@ -82,15 +82,23 @@ class StreamingEEGDataset(IterableDataset):
             mat_data = sio.loadmat(file_path)
             trial_keys = [key for key in mat_data.keys() if not key.startswith("__") and isinstance(mat_data[key], np.ndarray)]
             trial_keys.sort(key=natural_sort_key)
-            rng = np.random.default_rng(seed=turn_idx)
+            
+            # // 释放静态种子绑定以允许跨 Epoch 独立同分布随机采样
+            rng = np.random.default_rng()
             sampled_keys = rng.choice(trial_keys, min(self.trials_per_subject, len(trial_keys)), replace=False)
+            
+            # // 引入局部缓冲区阻断批次内高自相关性
+            buffer = []
             for trial_key in sampled_keys:
                 match = re.search(r"\d+", trial_key)
                 trial_idx = int(match.group()) if match else 1
                 data_raw = mat_data[trial_key].copy()
                 data_norm_t = self.process_trial(data_raw, turn, trial_idx)
-                for row in data_norm_t:
-                    yield torch.tensor(row, dtype=torch.float32)
+                buffer.extend(data_norm_t)
+                
+            rng.shuffle(buffer)
+            for row in buffer:
+                yield torch.tensor(row, dtype=torch.float32)
 
 
 def build_checkpoint(

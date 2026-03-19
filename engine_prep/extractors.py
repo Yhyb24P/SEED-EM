@@ -1,111 +1,92 @@
-from __future__ import annotations
-
 """
-Phase A: Task-Aware Selector Collaborative Training Engine.
-
-// 严格遵循重构设计稿 3.3 节的 A1 -> A2 -> A3 三段式优化。
-// 动态接管 QVAE 解码器与 GNN Proxy 形成闭环。
+深度学习特征提取器 (解耦物理时间轴与图拓扑)
+[修复 2] 彻底废除残端拼接，dFC/STFT 均基于绝对连续的时间流形运行。遇到坏纪元执行 Drop Graph 而非切碎时序。
 """
+import numpy as np
+from scipy import signal
 
-import torch
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
+def get_valid_epoch_mask(data, fs=200.0, epoch_sec=1.0, ptp_threshold=120.0):
+    """
+    亚时间窗动态剔除掩码生成
+    返回布尔数组，标注哪些 epoch 属于安全神经电生理学范围。绝对不进行物理拼接。
+    """
+    n_chan, n_samples = data.shape
+    epoch_len = int(fs * epoch_sec)
+    n_epochs = n_samples // epoch_len
+    
+    if n_epochs == 0:
+        return np.ones(1, dtype=bool)
+        
+    epochs = data[:, :n_epochs * epoch_len].reshape(n_chan, n_epochs, epoch_len).transpose(1, 0, 2)
+    ptp_max = np.max(np.ptp(epochs, axis=2), axis=1) # shape: (n_epochs,)
+    
+    return ptp_max < ptp_threshold
 
-from engine_prep.task_aware_selector import ComponentSelector, DifferentiableSTFTAndDE, compute_selector_loss
-from engine_quantum.qvae_net import QuantumEEGDenoiser
-# 假设存在轻量级 Proxy GNN
-# from engine_gnn.proxy_models import ProxyEmotionGCN 
+def compute_connectivity_matrix(data, fs=200.0):
+    """
+    提取静态皮尔逊图连通性矩阵 (Adjacency Matrix)。
+    [逻辑重构] 仅在计算协方差的数学代数空间内使用合法数据段，保护外部主输入流的时间完整性。
+    """
+    mask = get_valid_epoch_mask(data, fs=fs, epoch_sec=1.0, ptp_threshold=120.0)
+    epoch_len = int(fs * 1.0)
+    n_epochs = len(mask)
+    
+    epochs = data[:, :n_epochs * epoch_len].reshape(data.shape[0], n_epochs, epoch_len).transpose(1, 0, 2)
+    valid_epochs = epochs[mask]
+    
+    # 极端情况兜底
+    if len(valid_epochs) == 0:
+        data_norm = (data - np.mean(data, axis=1, keepdims=True)) / (np.std(data, axis=1, keepdims=True) + 1e-8)
+        return np.corrcoef(data_norm)
+        
+    # 仅在计算相关性的内部空间展平，绝不污染返回主循环的连续时序数据
+    clean_data_for_graph = valid_epochs.transpose(1, 0, 2).reshape(data.shape[0], -1)
+    
+    std_dev = np.std(clean_data_for_graph, axis=1, keepdims=True)
+    std_dev[std_dev == 0] = 1e-8 
+    data_norm = (clean_data_for_graph - np.mean(clean_data_for_graph, axis=1, keepdims=True)) / std_dev
+    
+    return np.corrcoef(data_norm)
 
-def train_collaborative_selector(
-    qvae_decoder: QuantumEEGDenoiser,
-    proxy_model: torch.nn.Module, 
-    dataloader: DataLoader,
-    device: torch.device,
-    epochs_a2: int = 10,
-    epochs_a3: int = 20
-):
-    """三段式协同寻优引擎 (Phase A)"""
+def compute_dfc_matrix(data, fs=200.0, window_sec=4.0, step_sec=1.0):
+    """
+    [新增算子] 提取动态功能连通性 (dFC) 张量。
+    遵循马尔可夫演化时序：遇到强伪迹坏窗直接执行 Drop Graph，杜绝时序拼接引起的人造空间跳变。
+    """
+    n_chan, n_samples = data.shape
+    win_len = int(fs * window_sec)
+    step_len = int(fs * step_sec)
     
-    selector = ComponentSelector(in_channels=1, n_components=6).to(device)
-    diff_stft = DifferentiableSTFTAndDE(fs=200.0, window_sec=2.0).to(device)
+    dfc_list = []
     
-    # ==========================================
-    # Step A1: Proxy 预热 (假设 proxy_model 已完成旧特征预训练)
-    # 此时冻结 Proxy 权重，仅通过它提取监督梯度
-    # ==========================================
-    for param in proxy_model.parameters():
-        param.requires_grad = False
-    proxy_model.eval()
-    
-    for param in qvae_decoder.parameters():
-        param.requires_grad = False
-    qvae_decoder.eval()
+    for start in range(0, n_samples - win_len + 1, step_len):
+        segment = data[:, start:start + win_len]
+        
+        # Drop Graph：如果当前动态窗包含 >150μV 的高方差爆音，则丢弃整张网络拓扑图
+        if np.max(np.ptp(segment, axis=1)) > 150.0:
+            continue
+            
+        if np.any(np.std(segment, axis=1) < 1e-4):
+            continue
+            
+        std_dev = np.std(segment, axis=1, keepdims=True)
+        std_dev[std_dev == 0] = 1e-8
+        seg_norm = (segment - np.mean(segment, axis=1, keepdims=True)) / std_dev
+        
+        dfc_list.append(np.corrcoef(seg_norm))
+        
+    if len(dfc_list) == 0:
+        return np.expand_dims(compute_connectivity_matrix(data, fs), axis=0)
+        
+    return np.array(dfc_list) # 输出时空张量维度: (K, 62, 62)
 
-    optimizer_sel = torch.optim.AdamW(selector.parameters(), lr=1e-3, weight_decay=1e-4)
-
-    # ==========================================
-    # Step A2: 冻结 Proxy，独占训练 Selector
-    # ==========================================
-    print("[*] 启动 Step A2: 冻结 Proxy，训练 Task-Aware Selector...")
-    selector.train()
-    
-    for epoch in range(epochs_a2):
-        for batch in dataloader:
-            # batch.z_raw: 未掩码的原始隐变量 (B, K, T)
-            # batch.art_prior: Phase A 阶段的弱标签先验 (由 Pearson 提供)
-            z_raw, art_prior, y_emo = batch.z_raw.to(device), batch.art_prior.to(device), batch.y_emo.to(device)
-            
-            optimizer_sel.zero_grad()
-            
-            # 1. Selector 打分
-            p_mask = selector(z_raw)  # (B, K, 1)
-            
-            # 2. 加权流形并重构纯净物理信号 (可微)
-            z_weighted = z_raw * p_mask
-            x_pure_hat = qvae_decoder.decoder(z_weighted.transpose(1, 2)).transpose(1, 2)
-            
-            # 3. 可微频域降解
-            node_de = diff_stft(x_pure_hat)
-            
-            # 4. 前向 Proxy 代理
-            y_pred = proxy_model(node_de, batch.adj_matrix.to(device))
-            
-            # 5. 计算混合损失
-            loss_task = F.cross_entropy(y_pred, y_emo)
-            loss_reg = compute_selector_loss(p_mask, art_prior)
-            loss_total = loss_task + loss_reg
-            
-            loss_total.backward()
-            optimizer_sel.step()
-
-    # ==========================================
-    # Step A3: 解冻 Proxy，协同微调 (Collaborative Fine-tuning)
-    # ==========================================
-    print("[*] 启动 Step A3: 解冻 Proxy 顶层，开启微小学习率联训...")
-    
-    # 仅解冻 Proxy 最后两层，防止伪迹重新污染整个图表征
-    for name, param in proxy_model.named_parameters():
-        if "classifier" in name or "fc" in name:
-            param.requires_grad = True
-            
-    proxy_model.train()
-    optimizer_joint = torch.optim.AdamW([
-        {'params': selector.parameters(), 'lr': 1e-4},
-        {'params': proxy_model.parameters(), 'lr': 1e-5}  # 极小学习率约束
-    ])
-    
-    for epoch in range(epochs_a3):
-        for batch in dataloader:
-            z_raw, art_prior, y_emo = batch.z_raw.to(device), batch.art_prior.to(device), batch.y_emo.to(device)
-            optimizer_joint.zero_grad()
-            
-            p_mask = selector(z_raw)
-            x_pure_hat = qvae_decoder.decoder((z_raw * p_mask).transpose(1, 2)).transpose(1, 2)
-            node_de = diff_stft(x_pure_hat)
-            y_pred = proxy_model(node_de, batch.adj_matrix.to(device))
-            
-            loss_total = F.cross_entropy(y_pred, y_emo) + compute_selector_loss(p_mask, art_prior)
-            loss_total.backward()
-            optimizer_joint.step()
-            
-    print("[+] Phase A 协同寻优结束，Task-Aware Selector 权重已准备落盘。")
+def compute_stft_features(data, fs=200.0):
+    """
+    提取短时傅里叶变换 (STFT) 时频表征。
+    [防泄露] 直接接收来自主循环的连续物理波形，彻底消除拼凑断崖造成的 Sinc 高频宽带泄露。
+    """
+    # 调整 STFT 窗长至 2.0 秒，保障 0.5Hz 物理频域分辨率，修复 Delta/Theta 频段塌缩
+    nperseg = int(fs * 2)
+    noverlap = nperseg // 2 
+    _, _, Zxx = signal.stft(data, fs=fs, nperseg=nperseg, noverlap=noverlap)
+    return np.abs(Zxx)

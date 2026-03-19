@@ -141,7 +141,7 @@ def compute_selector_loss(
     # 3. 反作弊惩罚 (L_anti_cheat):
     # 若先验 artifact_score 极高 (疑似 EOG/EMG)，但 Selector 依然给出高保留概率，则施加重罚。
     # 阻断 Selector 将面部肌肉活动作为情绪分类捷径。
-    loss_anticheat = torch.mean(p_mask.squeeze(-1) * artifact_score_prior)
+    loss_anticheat = torch.mean(p_mask * artifact_score_prior.mean(dim=-1, keepdim=True))
     
     total_reg = lambda_sparse * loss_sparse + \
                 lambda_smooth * loss_smooth + \

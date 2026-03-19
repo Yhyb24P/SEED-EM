@@ -39,9 +39,8 @@ if HAS_QVAE_DEPS:
             @qml.qnode(self.dev, interface="torch")
             def q_circuit(inputs, weights):
                 for i in range(n_qubits):
-                    # qml.RY(inputs[i], wires=i)
-                    # qml.RY(inputs[:, i], wires=i)
-                    qml.RY(inputs[..., i], wires=i)
+                    # // 显式索引标量输入剥离隐式批次化降级屏障
+                    qml.RY(inputs[i], wires=i)
                 qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
                 return [qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]
                 
@@ -65,17 +64,16 @@ if HAS_QVAE_DEPS:
             logvar = self.fc_logvar(h)
             z = self.reparameterize(mu, logvar)
             
-            # # 剥离 torch.vmap 的黑盒映射，改用显式计算图遍历穿透 PennyLane 屏障
-            # q_out_list = []
-            # for i in range(z.size(0)):
-            #     res_i = self.q_circuit(z[i], self.q_weights)
-            #     if isinstance(res_i, (list, tuple)):
-            #         q_out_list.append(torch.stack(res_i))
-            #     else:
-            #         q_out_list.append(res_i)
-            # q_out = torch.stack(q_out_list).float()
-            res = self.q_circuit(z, self.q_weights)
-            q_out = torch.stack(res, dim=1).float() if isinstance(res, (list, tuple)) else res.float()
+            # // 强制内存连续并恢复显式批次遍历防御 lightning.gpu 隐式降级崩溃
+            z_c = z.contiguous()
+            q_out_list = []
+            for i in range(z_c.size(0)):
+                res_i = self.q_circuit(z_c[i], self.q_weights)
+                if isinstance(res_i, (list, tuple)):
+                    q_out_list.append(torch.stack(res_i))
+                else:
+                    q_out_list.append(res_i)
+            q_out = torch.stack(q_out_list).float()
                 
             recon = self.decoder(q_out)
             return recon, mu, logvar, q_out
