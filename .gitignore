@@ -1,15 +1,18 @@
 # =========================
 # 数据与特征矩阵 (严格隔离)
 # =========================
-# 匹配 Data 目录下所有层级的各类数据文件
-Data/**/*.mat
-Data/**/*.npy
-Data/**/*.h5
-Data/**/*.csv
-Data/**/*.pdf
+# 匹配 data 目录下所有层级的各类数据文件
+data/**/*.mat
+data/**/*.npy
+data/**/*.h5
+data/**/*.csv
+data/**/*.pdf
+data/**/*.pt
+data/**/*.pth
+
 SEED_GCN_Classifier/
 math/
-# 全局兜底：防止数据文件出现在非 Data 目录
+# 全局兜底：防止数据文件出现在非 data 目录
 *.mat
 *.npy
 *.h5

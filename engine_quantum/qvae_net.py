@@ -40,6 +40,7 @@ if HAS_QVAE_DEPS:
             def q_circuit(inputs, weights):
                 for i in range(n_qubits):
                     # qml.RY(inputs[i], wires=i)
+                    # qml.RY(inputs[:, i], wires=i)
                     qml.RY(inputs[..., i], wires=i)
                 qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
                 return [qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]

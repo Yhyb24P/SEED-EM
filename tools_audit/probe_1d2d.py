@@ -97,7 +97,7 @@ def plot_all_channels_waveform_grid(raw_data, pure_data, metadata, save_path, wi
                 if ch_idx < n_chan:
                     ch_name = CH_NAMES[ch_idx]
                     ax.plot(t, raw_data[ch_idx, :plot_len], color=COLORS["Raw"], alpha=0.8, label='Raw (Drift/EOG)')
-                    ax.plot(t, pure_data[ch_idx, :plot_len], color=COLORS["Pure"], linewidth=1.0, label='ICA Purified')
+                    ax.plot(t, pure_data[ch_idx, :plot_len], color=COLORS["Pure"], linewidth=1.0, label='QVAE Purified')
                     
                     p1, p99 = np.percentile(pure_data[ch_idx, :plot_len], [0.5, 99.5])
                     ax.set_ylim(p1 - 15, p99 + 15)
