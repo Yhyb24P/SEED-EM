@@ -18,26 +18,17 @@ import numpy as np
 import scipy.io as sio
 from tqdm import tqdm
 
-try:
-    from configs.prep_config import CH_NAMES, FS, WINDOW_SEC
-except ImportError:
-    from prep_config import CH_NAMES, FS, WINDOW_SEC
+from configs.prep_config import CH_NAMES, FS, WINDOW_SEC
 
-try:
-    from engine_prep.transforms import fix_hardcoded_bads, intercept_gradient_spikes
-except ImportError:
-    from transforms import fix_hardcoded_bads, intercept_gradient_spikes
 
-try:
-    from engine_prep.extractors import compute_connectivity_matrix, compute_dfc_matrix, compute_stft_features
-except ImportError:
-    # 当前平铺目录未上传原 extractors.py 时，只允许导入失败后提示
-    raise ImportError("compute_connectivity_matrix/compute_dfc_matrix/compute_stft_features not found")
 
-try:
-    from engine_prep.artifact import apply_windowed_artifact_rejection
-except ImportError:
-    from artifact import apply_windowed_artifact_rejection
+from engine_prep.transforms import fix_hardcoded_bads, intercept_gradient_spikes
+
+
+from engine_prep.extractors import compute_connectivity_matrix, compute_dfc_matrix, compute_stft_features
+
+
+from engine_prep.artifact import apply_windowed_artifact_rejection
 
 try:
     from tools_audit.probe_1d2d import set_pub_style, plot_all_channels_waveform_grid, plot_all_channels_stft_grid
@@ -140,16 +131,14 @@ def pipeline():
 
             data_raw = fix_hardcoded_bads(data_raw, turn, trial_idx + 1)
             data_raw = data_raw - np.mean(data_raw, axis=1, keepdims=True)
+            data_raw = intercept_gradient_spikes(data_raw, grad_threshold=50.0, check_step=2)
             data_raw = mne.filter.filter_data(data_raw, sfreq=FS, l_freq=1.0, h_freq=50.0, method="fir", phase="zero", verbose=False)
             data_raw = mne.filter.notch_filter(data_raw, Fs=FS, freqs=np.array([50.0]), method="fir", phase="zero", verbose=False)
-
             chan_stds = np.std(data_raw, axis=1)
             valid_mask = (chan_stds > 1e-4) & (chan_stds < 100.0)
             if np.any(valid_mask):
                 global_ref = np.mean(data_raw[valid_mask, :], axis=0)
                 data_raw[valid_mask, :] -= global_ref
-
-            data_raw = intercept_gradient_spikes(data_raw, grad_threshold=50.0, check_step=2)
             global_mean = np.mean(data_raw, axis=1, keepdims=True)
             global_std = np.std(data_raw, axis=1, keepdims=True)
             global_std[global_std == 0] = 1e-8

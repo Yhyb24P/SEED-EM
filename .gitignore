@@ -2,13 +2,15 @@
 # 数据与特征矩阵 (严格隔离)
 # =========================
 # 匹配 data 目录下所有层级的各类数据文件
-data/**/*.mat
-data/**/*.npy
-data/**/*.h5
-data/**/*.csv
-data/**/*.pdf
-data/**/*.pt
-data/**/*.pth
+*.mat
+*.npy
+*.h5
+*.csv
+*.pdf
+*.pt
+
+*.pth
+
 
 SEED_GCN_Classifier/
 math/

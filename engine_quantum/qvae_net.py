@@ -37,10 +37,10 @@ if HAS_QVAE_DEPS:
                 self.dev = qml.device("default.qubit", wires=n_qubits)
             
             @qml.qnode(self.dev, interface="torch")
-            def q_circuit(inputs, weights):
+            def q_circuit(inputs_t, weights):
                 for i in range(n_qubits):
-                    # // 显式索引标量输入剥离隐式批次化降级屏障
-                    qml.RY(inputs[i], wires=i)
+                    # // 绑定按线转置后的广播输入以触发单次批量电路执行
+                    qml.RY(inputs_t[i], wires=i)
                 qml.StronglyEntanglingLayers(weights, wires=range(n_qubits))
                 return [qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]
                 
@@ -64,16 +64,15 @@ if HAS_QVAE_DEPS:
             logvar = self.fc_logvar(h)
             z = self.reparameterize(mu, logvar)
             
-            # // 强制内存连续并恢复显式批次遍历防御 lightning.gpu 隐式降级崩溃
-            z_c = z.contiguous()
-            q_out_list = []
-            for i in range(z_c.size(0)):
-                res_i = self.q_circuit(z_c[i], self.q_weights)
-                if isinstance(res_i, (list, tuple)):
-                    q_out_list.append(torch.stack(res_i))
-                else:
-                    q_out_list.append(res_i)
-            q_out = torch.stack(q_out_list).float()
+            # // 转置为 [n_qubits, batch] 以匹配 PennyLane broadcasting 约定
+            z_t = z.transpose(0, 1).contiguous()
+            q_res = self.q_circuit(z_t, self.q_weights)
+            if isinstance(q_res, (list, tuple)):
+                q_out = torch.stack(q_res, dim=0).transpose(0, 1).contiguous().float()
+            else:
+                q_out = q_res.float()
+                if q_out.dim() == 1:
+                    q_out = q_out.unsqueeze(0)
                 
             recon = self.decoder(q_out)
             return recon, mu, logvar, q_out

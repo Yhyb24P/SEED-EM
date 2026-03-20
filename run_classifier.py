@@ -16,16 +16,9 @@ import torch.nn.functional as F
 import yaml
 from sklearn.metrics import f1_score
 
-try:
-    from engine_gnn.graph_operators import EEG_GCN, EEG_DGCN
-except ImportError:
-    from graph_operators import EEG_GCN, EEG_DGCN
 
-try:
-    from engine_gnn.cv_router import get_loso_loaders, get_loto_loaders
-except ImportError:
-    from cv_router import get_loso_loaders, get_loto_loaders
-
+from engine_gnn.graph_operators import EEG_GCN, EEG_DGCN
+from engine_gnn.cv_router import get_loso_loaders, get_loto_loaders
 
 def resolve_config_path(path: str | None = None) -> str:
     candidates = []

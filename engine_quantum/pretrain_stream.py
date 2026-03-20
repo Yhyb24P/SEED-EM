@@ -143,7 +143,15 @@ def train_qvae(
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     dataset = StreamingEEGDataset(input_dir, max_subjects=15, trials_per_subject=5)
-    dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=0, drop_last=True)
+    num_workers = max(1, min(4, os.cpu_count() or 1))
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        drop_last=True,
+        pin_memory=(device.type == "cuda"),
+        persistent_workers=(num_workers > 0),
+    )
 
     model = QuantumEEGDenoiser(input_dim=62, hidden_dim=32, n_qubits=6).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
@@ -152,7 +160,9 @@ def train_qvae(
     model.train()
 
     for epoch in range(epochs):
-        beta_weight = beta_max * 0.5 * (1 - np.cos(np.pi * min(epoch / (epochs * 0.8), 1.0)))
+        warmup_epochs = max(1, int(np.ceil(epochs * 0.8)))
+        beta_progress = min((epoch + 1) / warmup_epochs, 1.0)
+        beta_weight = beta_max * 0.5 * (1 - np.cos(np.pi * beta_progress))
         epoch_loss = 0.0
         recon_loss_sum = 0.0
         kl_loss_sum = 0.0
