@@ -25,11 +25,11 @@ class GradReverse(torch.autograd.Function):
         return grad_output.neg() * ctx.alpha, None
     
 class BandRegionAttention(nn.Module):
-    def __init__(self, num_nodes=62, num_bands=5):
+    def __init__(self, num_nodes=16, num_bands=5):
         super().__init__()
         init_att = torch.zeros(num_nodes, num_bands)
-        FRONTAL = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
-        TEMPORAL = [23, 24, 31, 32, 40]
+        FRONTAL = [0, 1, 2, 3, 4, 5, 6]
+        TEMPORAL = [7, 11]
         init_att[TEMPORAL, 1] = 1.0
         init_att[FRONTAL, 2] = 1.0
         self.attention = nn.Parameter(init_att)
@@ -72,7 +72,7 @@ class EEG_GCN(nn.Module):
 
 
 class EEG_DGCN(nn.Module):
-    def __init__(self, in_channels=5, hidden_channels=32, num_classes=3, num_nodes=62):
+    def __init__(self, in_channels=5, hidden_channels=32, num_classes=3, num_nodes=16):
         super(EEG_DGCN, self).__init__()
         self.num_nodes = num_nodes
         self.d_k = 16

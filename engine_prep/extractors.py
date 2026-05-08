@@ -62,18 +62,14 @@ def compute_dfc_matrix(data, fs=200.0, window_sec=4.0, step_sec=1.0):
     for start in range(0, n_samples - win_len + 1, step_len):
         segment = data[:, start:start + win_len]
         
-        # Drop Graph：如果当前动态窗包含 >150μV 的高方差爆音，则丢弃整张网络拓扑图
-        if np.max(np.ptp(segment, axis=1)) > 150.0:
-            continue
-            
-        if np.any(np.std(segment, axis=1) < 1e-4):
-            continue
-            
-        std_dev = np.std(segment, axis=1, keepdims=True)
-        std_dev[std_dev == 0] = 1e-8
-        seg_norm = (segment - np.mean(segment, axis=1, keepdims=True)) / std_dev
-        
-        dfc_list.append(np.corrcoef(seg_norm))
+        # // 注入静态对角矩阵以保持严格的马尔可夫时序长度对齐
+        if np.max(np.ptp(segment, axis=1)) > 150.0 or np.any(np.std(segment, axis=1) < 1e-4):
+            dfc_list.append(np.eye(n_chan))
+        else:
+            std_dev = np.std(segment, axis=1, keepdims=True)
+            std_dev[std_dev == 0] = 1e-8
+            seg_norm = (segment - np.mean(segment, axis=1, keepdims=True)) / std_dev
+            dfc_list.append(np.corrcoef(seg_norm))
         
     if len(dfc_list) == 0:
         return np.expand_dims(compute_connectivity_matrix(data, fs), axis=0)

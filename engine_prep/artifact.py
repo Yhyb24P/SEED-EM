@@ -50,10 +50,27 @@ def _load_qvae_model_cached(weight_path: str, device_name: str):
     if not HAS_QVAE_DEPS:
         raise ImportError("QVAE dependencies not available")
     device = torch.device(device_name)
-    model = QuantumEEGDenoiser(input_dim=62, hidden_dim=32, n_qubits=6).to(device)
+    torch.set_num_threads(1)
     checkpoint = torch.load(weight_path, map_location=device)
+    # 从 checkpoint 自描述元数据读取架构参数，避免硬编码维度不匹配
+    input_dim = checkpoint.get("input_dim", 16)
+    n_qubits = checkpoint.get("n_qubits", 6)
+    model = QuantumEEGDenoiser(input_dim=input_dim, hidden_dim=32, n_qubits=n_qubits).to(device)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
     model.load_state_dict(state_dict, strict=True)
+    model.eval()
+    return model
+
+@lru_cache(maxsize=2)
+def _load_selector_model_cached(weight_path: str, device_name: str):
+    device = torch.device(device_name)
+    try:
+        from engine_prep.task_aware_selector import ComponentSelector
+    except ImportError:
+        from engine_gnn.classifier_taskaware_adapter import ComponentSelector
+    model = ComponentSelector(in_channels=1, n_components=6).to(device)
+    ckpt = torch.load(weight_path, map_location=device)
+    model.load_state_dict(ckpt.get("selector_state_dict", ckpt), strict=True)
     model.eval()
     return model
 
@@ -65,11 +82,12 @@ def _process_qvae_segment(
     global_mean: Optional[np.ndarray] = None,
     global_std: Optional[np.ndarray] = None,
     weight_path: Optional[str] = None,
+    selector_weight: Optional[str] = None,
 ):
     if not HAS_QVAE_DEPS:
         raise ImportError("QVAE dependencies not available")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")
     resolved_weight = _resolve_qvae_weight_path(weight_path)
     model = _load_qvae_model_cached(resolved_weight, str(device))
 
@@ -84,14 +102,15 @@ def _process_qvae_segment(
     x_norm = (x_raw - g_mean) / g_std
 
     with torch.no_grad():
-        chunk_size = 2000
+        chunk_size = 8192 if device.type == "cuda" else 2000
         z_raw_list = []
         for i in range(0, x_norm.size(0), chunk_size):
             _, _, _, q_chunk = model(x_norm[i : i + chunk_size])
             z_raw_list.append(q_chunk)
         z_raw = torch.cat(z_raw_list, dim=0)  # (T, K)
 
-        frontal_indices = [0, 1, 2, 3, 4]
+        frontal_indices = [0, 1, 2]
+        
         variances = torch.var(x_raw[:, frontal_indices], dim=0)
         valid_mask = (variances > 1e-2) & (variances < 5000)
         if not valid_mask.any():
@@ -107,8 +126,13 @@ def _process_qvae_segment(
         rho = torch.sum(z_centered * a_centered.unsqueeze(1), dim=0) / denom  # (K,)
 
         artifact_score = torch.abs(rho)
-        retain_prob = 1.0 - torch.clamp(artifact_score / 0.4, min=0.0, max=1.0)
-        hard_mask = (artifact_score <= 0.4).float()
+        if selector_weight and os.path.exists(selector_weight):
+            selector = _load_selector_model_cached(selector_weight, str(device))
+            p_mask = selector(z_raw.transpose(0, 1).unsqueeze(0))
+            retain_prob = p_mask.view(-1)
+        else:
+            retain_prob = 1.0 - torch.clamp(artifact_score / 0.4, min=0.0, max=1.0)
+        hard_mask = (retain_prob >= 0.5).float()
         z_clean = z_raw * retain_prob.unsqueeze(0)
 
         clean_norm_list = []
@@ -139,15 +163,16 @@ def _process_artifact_segment(
     global_mean: Optional[np.ndarray] = None,
     global_std: Optional[np.ndarray] = None,
     weight_path: Optional[str] = None,
+    selector_weight: Optional[str] = None,
 ):
-    if np.linalg.matrix_rank(data_seg) < 15:
+    if np.linalg.matrix_rank(data_seg) < min(15, data_seg.shape[0]):
         return data_seg, None
 
     if method == "qvae" and HAS_QVAE_DEPS:
-        return _process_qvae_segment(data_seg, global_mean=global_mean, global_std=global_std, weight_path=weight_path)
+        return _process_qvae_segment(data_seg, global_mean=global_mean, global_std=global_std, weight_path=weight_path, selector_weight=selector_weight)
 
     try:
-        info = mne.create_info(ch_names=CH_NAMES, sfreq=sfreq, ch_types=["eeg"] * data_seg.shape[0])
+        info = mne.create_info(ch_names=CH_NAMES[: data_seg.shape[0]], sfreq=sfreq, ch_types=["eeg"] * data_seg.shape[0])
         montage = mne.channels.make_standard_montage("standard_1020")
         ica = mne.preprocessing.ICA(n_components=20, method="picard", random_state=42, max_iter=2000, verbose=False)
         raw_seg = mne.io.RawArray(data_seg * 1e-6, info, verbose=False)
@@ -172,7 +197,8 @@ def apply_windowed_artifact_rejection(
     global_mean: Optional[np.ndarray] = None,
     global_std: Optional[np.ndarray] = None,
     weight_path: Optional[str] = None,
-):
+    selector_weight: Optional[str] = None,
+ ):
     n_chan, n_samples = data.shape
     window_len = int(sfreq * window_sec)
 
@@ -184,7 +210,9 @@ def apply_windowed_artifact_rejection(
             global_mean=global_mean,
             global_std=global_std,
             weight_path=weight_path,
+            selector_weight=selector_weight,
         )
+        
         return seg_data, seg_aux
 
     seg_num = int(np.ceil(n_samples / window_len))
@@ -197,7 +225,8 @@ def apply_windowed_artifact_rejection(
         end_idx = min((seg + 1) * window_len, n_samples)
         segments.append((start_idx, end_idx, data[:, start_idx:end_idx]))
 
-    safe_n_jobs = 1 if method == "qvae" else n_jobs
+    # 恢复 CUDA 进程安全锁，依托重构后的 GPU 量子网络原生批处理实现极速流转
+    safe_n_jobs = n_jobs
     processed_segments = Parallel(n_jobs=safe_n_jobs)(
         delayed(_process_artifact_segment)(
             seg_data,
@@ -206,6 +235,7 @@ def apply_windowed_artifact_rejection(
             global_mean=global_mean,
             global_std=global_std,
             weight_path=weight_path,
+            selector_weight=selector_weight,
         )
         for _, _, seg_data in segments
     )

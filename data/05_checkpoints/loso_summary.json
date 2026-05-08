@@ -1,0 +1,97 @@
+{
+  "config_path": "configs/train_config.yaml",
+  "lambda_artinv": 0.2,
+  "folds": [
+    {
+      "subject_id": 1,
+      "best_val_f1": 0.42263978281150283,
+      "test_f1": 0.46134286039267514,
+      "checkpoint": "data/05_checkpoints/best_gcn_loso_S01.pth"
+    },
+    {
+      "subject_id": 2,
+      "best_val_f1": 0.5360230174052696,
+      "test_f1": 0.38707843436810685,
+      "checkpoint": "data/05_checkpoints/best_gcn_loso_S02.pth"
+    },
+    {
+      "subject_id": 3,
+      "best_val_f1": 0.6975240081680729,
+      "test_f1": 0.6823358409914725,
+      "checkpoint": "data/05_checkpoints/best_gcn_loso_S03.pth"
+    },
+    {
+      "subject_id": 4,
+      "best_val_f1": 0.7283936889839278,
+      "test_f1": 0.6881621736050048,
+      "checkpoint": "data/05_checkpoints/best_gcn_loso_S04.pth"
+    },
+    {
+      "subject_id": 5,
+      "best_val_f1": 0.6815967111748453,
+      "test_f1": 0.6027820175625254,
+      "checkpoint": "data/05_checkpoints/best_gcn_loso_S05.pth"
+    },
+    {
+      "subject_id": 6,
+      "best_val_f1": 0.7525659208903102,
+      "test_f1": 0.7612813657110827,
+      "checkpoint": "data/05_checkpoints/best_gcn_loso_S06.pth"
+    },
+    {
+      "subject_id": 7,
+      "best_val_f1": 0.9136485680577633,
+      "test_f1": 0.6135010381343012,
+      "checkpoint": "data/05_checkpoints/best_gcn_loso_S07.pth"
+    },
+    {
+      "subject_id": 8,
+      "best_val_f1": 0.7211710446575734,
+      "test_f1": 0.7902745613146871,
+      "checkpoint": "data/05_checkpoints/best_gcn_loso_S08.pth"
+    },
+    {
+      "subject_id": 9,
+      "best_val_f1": 0.494731061010108,
+      "test_f1": 0.7434628440137434,
+      "checkpoint": "data/05_checkpoints/best_gcn_loso_S09.pth"
+    },
+    {
+      "subject_id": 10,
+      "best_val_f1": 0.769607419232751,
+      "test_f1": 0.5025635321525725,
+      "checkpoint": "data/05_checkpoints/best_gcn_loso_S10.pth"
+    },
+    {
+      "subject_id": 11,
+      "best_val_f1": 0.5918216545580355,
+      "test_f1": 0.7089781982622735,
+      "checkpoint": "data/05_checkpoints/best_gcn_loso_S11.pth"
+    },
+    {
+      "subject_id": 12,
+      "best_val_f1": 0.7165171986892669,
+      "test_f1": 0.6358908557490239,
+      "checkpoint": "data/05_checkpoints/best_gcn_loso_S12.pth"
+    },
+    {
+      "subject_id": 13,
+      "best_val_f1": 0.6833846807337817,
+      "test_f1": 0.535648581960786,
+      "checkpoint": "data/05_checkpoints/best_gcn_loso_S13.pth"
+    },
+    {
+      "subject_id": 14,
+      "best_val_f1": 0.6567811732330741,
+      "test_f1": 0.5983320503664757,
+      "checkpoint": "data/05_checkpoints/best_gcn_loso_S14.pth"
+    },
+    {
+      "subject_id": 15,
+      "best_val_f1": 0.4526689429201369,
+      "test_f1": 0.6067197231490153,
+      "checkpoint": "data/05_checkpoints/best_gcn_loso_S15.pth"
+    }
+  ],
+  "mean_test_f1": 0.6212236051822498
+}

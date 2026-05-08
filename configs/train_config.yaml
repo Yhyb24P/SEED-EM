@@ -6,7 +6,7 @@ paths:
   log_dir: "logs"                   # TensorBoard 追踪目录
 
 eeg_semantics:
-  num_channels: 62
+  num_channels: 16
   num_classes: 3                    # 0: 消极, 1: 中性, 2: 积极
   fs: 200
   # STFT 张量映射为 DE 的基准频段
@@ -41,3 +41,4 @@ phase_a:
   lambda_sparse: 0.1
   lambda_smooth: 0.05
   lambda_anticheat: 0.5
+

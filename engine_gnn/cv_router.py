@@ -49,8 +49,10 @@ def get_loso_loaders(data_dir, test_subject_id, batch_size=32):
     full_train_dataset = ConcatDataset(train_datasets)
     full_val_dataset = ConcatDataset(val_datasets)
     full_test_dataset = ConcatDataset(test_datasets)
+    import os
+    num_workers = max(1, min(8, os.cpu_count() or 1))
 
-    train_loader = DataLoader(full_train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(full_val_dataset, batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(full_test_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(full_train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, persistent_workers=True)
+    val_loader = DataLoader(full_val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, persistent_workers=True)
+    test_loader = DataLoader(full_test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, persistent_workers=True)
     return train_loader, val_loader, test_loader

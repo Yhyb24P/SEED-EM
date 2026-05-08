@@ -180,9 +180,13 @@ class DifferentiableSTFTAndDE(nn.Module):
 
 def compute_schedules(epoch: int, max_epoch: int) -> Schedules:
     """Compute GRL and trait schedules from normalized progress."""
-    progress = float(epoch) / float(max(max_epoch, 1))
+    warmup_epochs = 3
+    if epoch <= warmup_epochs:
+        return Schedules(alpha=0.0, gamma=0.0)
+
+    progress = float(epoch - warmup_epochs) / float(max(max_epoch - warmup_epochs, 1))
     scalar = 2.0 / (1.0 + torch.exp(torch.tensor(-10.0 * progress))) - 1.0
-    alpha = 0.3 * float(scalar.item())
+    alpha = 0.15 * float(scalar.item())
     gamma = (torch.log(torch.tensor(3.0)) / torch.log(torch.tensor(15.0))) * scalar
     return Schedules(alpha=alpha, gamma=float(gamma.item()))
 

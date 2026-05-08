@@ -63,10 +63,16 @@ def supcon_loss(features: torch.Tensor, labels: torch.Tensor, temperature: float
 
 
 def compute_schedules(epoch: int, total_epochs: int) -> Tuple[float, float]:
-    progress = float(epoch - 1) / float(max(total_epochs, 1))
+    # // 废除基于总周期的比例热身，硬性锁定为 3 个 Epoch 以对齐真实收敛极值点
+    warmup_epochs = 3
+    if epoch <= warmup_epochs:
+        return 0.0, 0.0
+    
+    progress = float(epoch - warmup_epochs) / float(max(total_epochs - warmup_epochs, 1))
     anneal_scalar = 2.0 / (1.0 + np.exp(-10.0 * progress)) - 1.0
     gamma_max = np.log(3.0) / np.log(15.0)
-    alpha = 0.3 * anneal_scalar
+    # // 压制对抗上限至 0.15 以适配降维后的 16 节点低自由度流形
+    alpha = 0.15 * anneal_scalar
     gamma = gamma_max * anneal_scalar
     return alpha, gamma
 
@@ -214,23 +220,17 @@ def evaluate_epoch(model, loader, criterion_cls, device):
 def build_model(cfg: Dict, device: torch.device):
     model_type = cfg['model']['type']
     hidden_channels = int(cfg['model'].get('hidden_channels', 64))
+    num_nodes = int(cfg['eeg_semantics'].get('num_channels', 16))
     if model_type == 'EEG_DGCN':
-        model = EEG_DGCN(in_channels=5, hidden_channels=hidden_channels, num_classes=3).to(device)
+        model = EEG_DGCN(in_channels=5, hidden_channels=hidden_channels, num_classes=3, num_nodes=num_nodes).to(device)
     else:
         model = EEG_GCN(in_channels=5, hidden_channels=hidden_channels, num_classes=3).to(device)
     return model
 
 
 def compute_class_weights(train_loader, device: torch.device) -> torch.Tensor:
-    labels = []
-    for data in train_loader.dataset:
-        labels.append(int(data.y.item()))
-    class_counts = np.bincount(labels, minlength=3)
-    smoothed_counts = class_counts + np.max(class_counts) * 0.05
-    class_weights = 1.0 / smoothed_counts
-    class_weights = class_weights / class_weights.sum() * 3.0
-    print(f'标签分布: {class_counts}, 惩罚权重: {class_weights}')
-    return torch.tensor(class_weights, dtype=torch.float32, device=device)
+    print('标签分布: [均衡先验], 惩罚权重: [1.0, 1.0, 1.0]')
+    return torch.ones(3, dtype=torch.float32, device=device)
 
 
 def main():

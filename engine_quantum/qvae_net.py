@@ -30,13 +30,11 @@ if HAS_QVAE_DEPS:
             self.fc_mu = nn.Linear(hidden_dim, n_qubits)
             self.fc_logvar = nn.Linear(hidden_dim, n_qubits)
             
-            # self.dev = qml.device("default.qubit", wires=n_qubits)
-            try:
-                self.dev = qml.device("lightning.gpu", wires=n_qubits)
-            except Exception:
-                self.dev = qml.device("default.qubit", wires=n_qubits)
+            # // 切换为纯态 CPU 模拟，利用原生张量乘积彻底消灭 VJP 串行降级与 PCIe 通信开销
+            self.dev = qml.device("default.qubit", wires=n_qubits)
             
-            @qml.qnode(self.dev, interface="torch")
+            # // default.qubit 配合 backprop 可直接将量子模拟融入 PyTorch 动态计算图
+            @qml.qnode(self.dev, interface="torch", diff_method="backprop")
             def q_circuit(inputs_t, weights):
                 for i in range(n_qubits):
                     # // 绑定按线转置后的广播输入以触发单次批量电路执行
@@ -67,12 +65,14 @@ if HAS_QVAE_DEPS:
             # // 转置为 [n_qubits, batch] 以匹配 PennyLane broadcasting 约定
             z_t = z.transpose(0, 1).contiguous()
             q_res = self.q_circuit(z_t, self.q_weights)
+            
             if isinstance(q_res, (list, tuple)):
                 q_out = torch.stack(q_res, dim=0).transpose(0, 1).contiguous().float()
             else:
                 q_out = q_res.float()
                 if q_out.dim() == 1:
                     q_out = q_out.unsqueeze(0)
-                
+            
+            q_out = q_out.to(x.device)    
             recon = self.decoder(q_out)
             return recon, mu, logvar, q_out

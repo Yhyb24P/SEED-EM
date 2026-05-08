@@ -100,7 +100,7 @@ class PhaseASelectorDataset(Dataset):
                     art_prior = self._unwrap_object(art_scores, day_idx, trial_idx)
                     if z_raw.size == 0 or adj.size == 0 or art_prior.size == 0:
                         continue
-                    label = int(labels[trial_idx])
+                    label = int(labels[trial_idx]) + 1
                     samples.append(
                         TrialSample(
                             z_raw=torch.tensor(z_raw, dtype=torch.float32),
@@ -155,9 +155,13 @@ def collate_selector_trials(batch: Sequence[TrialSample]) -> Dict[str, torch.Ten
 def load_qvae_decoder(weight_path: str, device: torch.device, input_dim: int = 62, hidden_dim: int = 32, n_qubits: int = 6):
     if not HAS_QVAE_DEPS:
         raise ImportError("PyTorch/PennyLane dependencies missing for QVAE")
-    model = QuantumEEGDenoiser(input_dim=input_dim, hidden_dim=hidden_dim, n_qubits=n_qubits).to(device)
     checkpoint = torch.load(weight_path, map_location=device)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
+    # # 解析权重字典提取真实物理输入维数以自适应实例化网络拓扑
+    if "encoder.0.weight" in state_dict:
+        input_dim = state_dict["encoder.0.weight"].shape[1]
+        
+    model = QuantumEEGDenoiser(input_dim=input_dim, hidden_dim=hidden_dim, n_qubits=n_qubits).to(device)
     model.load_state_dict(state_dict, strict=True)
     model.eval()
     for param in model.parameters():
@@ -169,11 +173,13 @@ def load_proxy_model(cfg: Dict, checkpoint_path: str, device: torch.device):
     model_type = cfg.get("model", {}).get("type", "EEG_DGCN")
     hidden_channels = cfg.get("model", {}).get("hidden_channels", 64)
     num_classes = cfg.get("eeg_semantics", {}).get("num_classes", 3)
+    num_nodes = int(cfg.get("eeg_semantics", {}).get("num_channels", 16))
     if model_type == "EEG_DGCN":
-        model = EEG_DGCN(in_channels=5, hidden_channels=hidden_channels, num_classes=num_classes).to(device)
+        model = EEG_DGCN(in_channels=5, hidden_channels=hidden_channels, num_classes=num_classes, num_nodes=num_nodes).to(device)
     else:
         model = EEG_GCN(in_channels=5, hidden_channels=hidden_channels, num_classes=num_classes).to(device)
-    state_dict = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    state_dict = checkpoint.get("model_state_dict", checkpoint)
     model.load_state_dict(state_dict, strict=True)
     return model
 
@@ -219,11 +225,16 @@ def train_collaborative_selector(
 ):
     graph_spec = graph_spec or TemporalGraphSpec()
     selector = ComponentSelector(in_channels=1, n_components=6).to(device)
-    diff_stft = DifferentiableSTFTAndDE(fs=200.0, window_sec=2.0, hop_sec=1.0).to(device)
+    diff_stft = DifferentiableSTFTAndDE(fs=200.0, window_sec=2.0).to(device)
 
     for param in proxy_model.parameters():
         param.requires_grad = False
     proxy_model.eval()
+    
+    # // 绕开 cuDNN 引擎的限制，允许梯度穿透冻结的时序图卷积单元
+    for m in proxy_model.modules():
+        if isinstance(m, torch.nn.GRU):
+            m.train()
 
     optimizer_sel = torch.optim.AdamW(selector.parameters(), lr=1e-3, weight_decay=1e-4)
     history = {"a2": [], "a3": []}
@@ -246,11 +257,9 @@ def train_collaborative_selector(
             x_pure_hat = qvae_decoder.decoder(z_weighted.transpose(1, 2)).transpose(1, 2)
             x_pure_hat = _trim_decoded(x_pure_hat, lengths)
             node_de = diff_stft(x_pure_hat)
-
-            # 需修改接口签名，注入物理时序长度边界
-            valid_bins = lengths // int(diff_stft.fs * 1.0) 
-            graph_batch, graph_labels = _build_graphs_for_batch(node_de, adj_matrix, y_emo, subj_id, graph_spec, device, valid_bins)
             
+            graph_batch, graph_labels = _build_graphs_for_batch(node_de, adj_matrix, y_emo, subj_id, graph_spec, device)
+           
             if graph_batch is None or graph_labels is None or graph_labels.numel() == 0:
                 continue
             y_pred = forward_proxy(proxy_model, graph_batch)

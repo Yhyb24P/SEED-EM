@@ -8,9 +8,12 @@ import scipy.io as sio
 from scipy import signal
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-
+import sys
+# 获取项目根目录（SEED文件夹）
+root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.append(root_path)
 # 确保输出目录存在
-OUTPUT_DIR = "Data/QA_Reports/Advanced"
+OUTPUT_DIR = "data/03_qa_reports/Advanced"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def plot_advanced_metrics(mat_filepath):
@@ -60,7 +63,6 @@ def plot_advanced_metrics(mat_filepath):
 
     # ==========================================
     # 面板 1：GNN 邻接矩阵拓扑热力图 (Adjacency Matrix)
-    # 预期：对角线为1，应呈现出明显的额叶聚集与枕叶聚集区块
     # ==========================================
     ax1 = fig.add_subplot(1, 2, 1)
     
@@ -68,22 +70,21 @@ def plot_advanced_metrics(mat_filepath):
     cmap = mcolors.LinearSegmentedColormap.from_list('rwb', ['#053061', '#FFFFFF', '#67001F'])
     im1 = ax1.imshow(sample_adj, cmap=cmap, vmin=-1.0, vmax=1.0)
     
-    # 标记重要的脑区边界
-    regions = {'Frontal': (0, 13), 'Central': (23, 31), 'Parietal/Occipital': (41, 61)}
+    # 标记重要的脑区边界 (自适应 16 导联物理确界)
+    regions = {'Frontal': (0, 6), 'Central/Temporal': (7, 11), 'Parietal/Occipital': (12, 15)}
     for region, (start, end) in regions.items():
         rect = plt.Rectangle((start-0.5, start-0.5), end-start+1, end-start+1, 
                              fill=False, edgecolor='lime', linewidth=1.5, alpha=0.8)
         ax1.add_patch(rect)
         ax1.text(int(start), int(start)-1, region, color='lime', fontsize=9, fontweight='bold')
 
-    ax1.set_title("Pearson Connectivity Matrix ($A \in \mathbb{R}^{62 \\times 62}$)", fontsize=12)
+    ax1.set_title("Pearson Connectivity Matrix ($A \in \mathbb{R}^{16 \\times 16}$)", fontsize=12)
     fig.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04, label="Pearson $r$")
-    ax1.set_xticks(list(range(0, 62, 5)))
-    ax1.set_yticks(list(range(0, 62, 5)))
+    ax1.set_xticks(list(range(0, 16, 2)))
+    ax1.set_yticks(list(range(0, 16, 2)))
     
     # ==========================================
     # 面板 2：全局功率谱密度 Welch's PSD
-    # 预期：清晰的 1/f 衰减，以及 50Hz 处的深 V 型断崖
     # ==========================================
     ax2 = fig.add_subplot(1, 2, 2)
     
@@ -124,7 +125,7 @@ def plot_advanced_metrics(mat_filepath):
     print(f"[+] 成功生成审计看板: {save_path}")
 
 if __name__ == "__main__":
-    mat_dir = "Data/EEG_pure"
+    mat_dir = "data/02_pure_features"
     mat_files = [f for f in os.listdir(mat_dir) if f.endswith('.mat')]
     
     print("开始执行特征拓扑审计...")

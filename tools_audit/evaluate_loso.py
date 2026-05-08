@@ -2,7 +2,7 @@
 生理映射与特征归因审计器 (Audit Engine)
 新增流形特征域聚类探测器 (UMAP Latent Space Projection)，联合 Saliency Topography 实现双重印证。
 """
-import os
+
 import yaml
 import warnings
 import numpy as np
@@ -14,6 +14,10 @@ matplotlib.use('Agg')
 from sklearn.metrics import confusion_matrix, f1_score, accuracy_score
 import networkx as nx
 import mne
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 try:
     import umap.umap_ as umap
@@ -25,13 +29,10 @@ except ImportError:
 from engine_gnn.graph_operators import EEG_GCN, EEG_DGCN
 from engine_gnn.cv_router import get_loso_loaders
 
-# SEED 62导联标准顺序 (10-20系统)
+# 核心 16 导联拓扑流形顺序
 CH_NAMES = [
-    'FP1', 'FPZ', 'FP2', 'AF3', 'AF4', 'F7', 'F5', 'F3', 'F1', 'FZ', 'F2', 'F4', 'F6', 'F8',
-    'FT7', 'FC5', 'FC3', 'FC1', 'FCZ', 'FC2', 'FC4', 'FC6', 'FT8', 'T7', 'C5', 'C3', 'C1',
-    'CZ', 'C2', 'C4', 'C6', 'T8', 'TP7', 'CP5', 'CP3', 'CP1', 'CPZ', 'CP2', 'CP4', 'CP6',
-    'TP8', 'P7', 'P5', 'P3', 'P1', 'PZ', 'P2', 'P4', 'P6', 'P8', 'PO7', 'PO5', 'PO3', 'POZ',
-    'PO4', 'PO6', 'PO8', 'CB1', 'O1', 'OZ', 'O2', 'CB2'
+    'FP1', 'FP2', 'F7', 'F3', 'FZ', 'F4', 'F8', 'T7', 
+    'C3', 'CZ', 'C4', 'T8', 'PZ', 'O1', 'OZ', 'O2'
 ]
 
 def load_config(path='configs/train_config.yaml'):
@@ -66,13 +67,16 @@ def evaluate_loso_fold(subject_id, cfg, device):
     )
 
     model_type = cfg['model']['type']
+    num_nodes = int(cfg['eeg_semantics'].get('num_channels', 16))
     if model_type == 'EEG_DGCN':
-        model = EEG_DGCN(in_channels=5, hidden_channels=cfg['model']['hidden_channels'], num_classes=3)
+        model = EEG_DGCN(in_channels=5, hidden_channels=cfg['model']['hidden_channels'], num_classes=3, num_nodes=num_nodes)
     else:
         model = EEG_GCN(in_channels=5, hidden_channels=cfg['model']['hidden_channels'], num_classes=3)
         
     try:
-        model.load_state_dict(torch.load(checkpoint_path, map_location=device))
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        state_dict = checkpoint.get("model_state_dict", checkpoint)
+        model.load_state_dict(state_dict, strict=True)
     except RuntimeError:
         print(f"\n[-] 严重张量异构拦截: S{subject_id:02d} 落盘权重与当前物理不匹配！")
         return None, None, None, None
@@ -84,7 +88,7 @@ def evaluate_loso_fold(subject_id, cfg, device):
     all_labels = []
     all_features = []
     
-    accumulated_adj = np.zeros((62, 62))
+    accumulated_adj = np.zeros((16, 16))
     batch_count = 0
 
     with torch.no_grad():
@@ -130,19 +134,19 @@ def plot_saliency_topography(global_adj, output_dir):
     pos = get_channel_positions()
     G = nx.Graph()
     
-    for i in range(62):
+    for i in range(16):
         G.add_node(i)
 
     # 取上界高激活能量边
     threshold = np.percentile(global_adj.flatten(), 98) 
-    for i in range(62):
-        for j in range(i+1, 62):
+    for i in range(16):
+        for j in range(i+1, 16):
             if global_adj[i, j] > threshold:
                 G.add_edge(i, j, weight=global_adj[i, j])
 
     plt.figure(figsize=(10, 8))
     nx.draw_networkx_nodes(G, pos, node_size=150, node_color='skyblue', alpha=0.8)
-    nx.draw_networkx_labels(G, pos, labels={i: CH_NAMES[i] for i in range(62)}, font_size=8)
+    nx.draw_networkx_labels(G, pos, labels={i: CH_NAMES[i] for i in range(16)}, font_size=8)
     
     edges = G.edges(data=True)
     if edges:
@@ -206,7 +210,7 @@ def main():
     global_features = []
     global_subjects = []
     
-    global_dyn_adj_sum = np.zeros((62, 62))
+    global_dyn_adj_sum = np.zeros((16, 16))
     valid_subjects = 0
 
     for subj in range(1, 16):

@@ -160,7 +160,7 @@ class SEEDGraphDataset(Dataset):
 
             T = 3
             n_seconds = de_feat.shape[2]
-            for sec in range(0, n_seconds - T + 1):
+            for sec in range(0, n_seconds - T + 1, T):
                 x_slices = [de_feat[:, :, sec + t] for t in range(T)]
                 x_tensor = torch.tensor(np.concatenate(x_slices, axis=0), dtype=torch.float32)
 

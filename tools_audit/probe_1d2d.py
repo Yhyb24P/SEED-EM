@@ -10,8 +10,12 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.backends.backend_pdf import PdfPages
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from configs.prep_config import FS
 
-from config import CH_NAMES, FS
+TARGET_NODES = ['FP1', 'FP2', 'F7', 'F3', 'FZ', 'F4', 'F8', 'T7', 'C3', 'CZ', 'C4', 'T8', 'PZ', 'O1', 'OZ', 'O2']
 
 # ================= 0. 出版级绘图环境配置 =================
 def set_pub_style():
@@ -74,19 +78,20 @@ def _plot_summary_panel(ax, raw_data, pure_data, metadata):
 
 def plot_all_channels_waveform_grid(raw_data, pure_data, metadata, save_path, window_sec=10):
     """
-    1D 时域网格审计引擎：生成 4 页组成的单份 PDF 报告。
+    1D 时域网格审计引擎：动态生成多页 PDF 报告，防范维度越界。
     """
-    # [Fix 9] 静态常量保护：强制截断最大渲染通道数，防止索引击穿
-    n_chan = min(raw_data.shape[0], len(CH_NAMES))
+    # 动态获取实际通道数，彻底摒弃静态截断依赖
+    n_chan = raw_data.shape[0]
     n_samples = int(FS * window_sec)
     plot_len = min(n_samples, raw_data.shape[1], pure_data.shape[1])
     t = np.arange(plot_len) / FS
     
+    num_pages = int(np.ceil((n_chan + 1) / 16.0))
     # 启用 PdfPages 上下文以聚合多图
     with PdfPages(save_path) as pdf:
-        for fig_idx in range(4):
+        for fig_idx in range(num_pages):
             fig = plt.figure(figsize=(14, 8), constrained_layout=True)
-            fig.suptitle(f'Project A: Time-Domain Shift Audit - Page {fig_idx+1}/4', 
+            fig.suptitle(f'Project A: Time-Domain Shift Audit - Page {fig_idx+1}/{num_pages}', 
                          fontsize=12, fontweight='bold', y=1.02)
             gs = gridspec.GridSpec(4, 4, figure=fig)
             
@@ -95,7 +100,7 @@ def plot_all_channels_waveform_grid(raw_data, pure_data, metadata, save_path, wi
                 ax = fig.add_subplot(gs[ax_idx // 4, ax_idx % 4])
                 
                 if ch_idx < n_chan:
-                    ch_name = CH_NAMES[ch_idx]
+                    ch_name = TARGET_NODES[ch_idx] if ch_idx < len(TARGET_NODES) else f"CH{ch_idx}"
                     ax.plot(t, raw_data[ch_idx, :plot_len], color=COLORS["Raw"], alpha=0.8, label='Raw (Drift/EOG)')
                     ax.plot(t, pure_data[ch_idx, :plot_len], color=COLORS["Pure"], linewidth=1.0, label='QVAE Purified')
                     
@@ -120,7 +125,7 @@ def plot_all_channels_waveform_grid(raw_data, pure_data, metadata, save_path, wi
                     if ax_idx % 4 == 0:
                         ax.set_ylabel('Amp (µV)', color='#555555')
                 else:
-                    if ax_idx == 14:
+                    if ch_idx == n_chan:
                         _plot_summary_panel(ax, raw_data, pure_data, metadata)
                     else:
                         ax.axis('off')
@@ -132,10 +137,9 @@ def plot_all_channels_waveform_grid(raw_data, pure_data, metadata, save_path, wi
 
 def plot_all_channels_stft_grid(stft_data, raw_data, pure_data, metadata, save_path, window_sec=10):
     """
-    2D 频域网格审计引擎：生成 4 页组成的单份 STFT PDF 热力图报告。
+    2D 频域网格审计引擎：动态生成多页 STFT 热力图报告。
     """
-    # [Fix 9] 静态常量保护：强制截断最大渲染通道数，防止索引击穿
-    n_chan = min(stft_data.shape[0], len(CH_NAMES))
+    n_chan = stft_data.shape[0]
     _, n_freqs, n_tbins = stft_data.shape
     f = np.linspace(0, FS / 2, n_freqs)
     t = np.arange(n_tbins) * 25 / FS
@@ -145,10 +149,11 @@ def plot_all_channels_stft_grid(stft_data, raw_data, pure_data, metadata, save_p
     f_mask = f <= 50.0
     f_plot = f[f_mask]
     
+    num_pages = int(np.ceil((n_chan + 1) / 16.0))
     with PdfPages(save_path) as pdf:
-        for fig_idx in range(4):
+        for fig_idx in range(num_pages):
             fig = plt.figure(figsize=(14, 8), constrained_layout=True)
-            fig.suptitle(f'Project B: STFT Spectrogram Topology - Page {fig_idx+1}/4', 
+            fig.suptitle(f'Project B: STFT Spectrogram Topology - Page {fig_idx+1}/{num_pages}', 
                          fontsize=12, fontweight='bold', y=1.02)
             gs = gridspec.GridSpec(4, 4, figure=fig)
             
@@ -157,7 +162,7 @@ def plot_all_channels_stft_grid(stft_data, raw_data, pure_data, metadata, save_p
                 ax = fig.add_subplot(gs[ax_idx // 4, ax_idx % 4])
                 
                 if ch_idx < n_chan:
-                    ch_name = CH_NAMES[ch_idx]
+                    ch_name = TARGET_NODES[ch_idx] if ch_idx < len(TARGET_NODES) else f"CH{ch_idx}"
                     data_plot = stft_data[ch_idx, f_mask, :][:, t_mask]
                     
                     im = ax.pcolormesh(t_plot, f_plot, data_plot, shading='gouraud', cmap='jet')
@@ -178,7 +183,7 @@ def plot_all_channels_stft_grid(stft_data, raw_data, pure_data, metadata, save_p
                     if ax_idx % 4 == 0:
                         ax.set_ylabel('Freq (Hz)', color='#555555')
                 else:
-                    if ax_idx == 14:
+                    if ch_idx == n_chan:
                         _plot_summary_panel(ax, raw_data, pure_data, metadata)
                     else:
                         ax.axis('off')
